@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cisco Hardening and Vulnerability Analysis</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>CybersecurityJP</h1>
+        <p style="text-align: center;">Analizador de Vulnerabilidades en Configuraciones Cisco</p>
+
+        <div id="drag-area">
+            <input type="file" id="configFile" accept=".txt, .cfg" style="display: none;">
+            <label for="configFile">Arrastra y suelta un archivo .txt o .cfg aquí, o haz clic para seleccionar</label>
+        </div>
+        <p id="file-name"></p>
+        <button onclick="analyzeConfig()">Analizar Configuración</button>
+
+        <div id="results">
+            <h2>Resultados del Análisis</h2>
+            <p>Fecha del Análisis: <span id="analysis-date"></span></p>
+            <p>Sistema Operativo Detectado: <span id="os-type"></span></p>
+            <p>Versión del Sistema Operativo: <span id="ios-version"></span></p>
+            <p>Cumplimientos: <span id="compliant-count"></span></p>
+            <p>Hallazgos totales: <span id="non-compliant-count"></span></p>
+            <p>Perfil de Riesgo: <span id="risk-score"></span></p>
+            <div id="compliant">
+                <h3>Cumplimientos</h3>
+                <ul></ul>
+            </div>
+            <div id="nonCompliant">
+                <h3>Hallazgos</h3>
+                <ul></ul>
+            </div>
+            <div id="chart-container">
+                <canvas id="severityChart"></canvas>
+            </div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+  <button id="export-report-btn" disabled>Exportar Informe</button>
+</body>
+</html>

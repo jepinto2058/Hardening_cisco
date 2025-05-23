@@ -1,0 +1,123 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: #f4f4f4;
+    color: #333;
+}
+
+.container {
+    max-width: 800px;
+    margin: 20px auto;
+    background-color: #fff;
+    padding: 20px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    border-radius: 8px;
+}
+
+h1, h2 {
+    color: #0056b3;
+}
+
+#drag-area {
+    border: 2px dashed #ccc;
+    padding: 30px;
+    text-align: center;
+    cursor: pointer;
+    margin-bottom: 20px;
+    border-radius: 5px;
+}
+
+#drag-area label {
+    display: block;
+    font-size: 1.2em;
+    color: #555;
+}
+
+#file-name {
+    text-align: center;
+    margin-bottom: 20px;
+    font-style: italic;
+    color: #666;
+}
+
+button {
+    display: block;
+    width: 100%;
+    padding: 10px;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 1em;
+    margin-bottom: 10px;
+}
+
+button:hover {
+    background-color: #0056b3;
+}
+
+#results {
+    margin-top: 30px;
+    border-top: 1px solid #eee;
+    padding-top: 20px;
+}
+
+#results h2 {
+    margin-bottom: 15px;
+}
+
+#compliant ul, #nonCompliant ul {
+    list-style: none;
+    padding: 0;
+}
+
+#compliant li {
+    background-color: #e9f7ef;
+    border: 1px solid #d0e9c6;
+    margin-bottom: 10px;
+    padding: 10px;
+    border-radius: 4px;
+}
+
+#nonCompliant li {
+    background-color: #fcf8e3;
+    border: 1px solid #faebcc;
+    margin-bottom: 10px;
+    padding: 10px;
+    border-radius: 4px;
+}
+
+#nonCompliant li.severity-media {
+    background-color: #ffeeba;
+    border-color: #ffc107;
+}
+
+#nonCompliant li.severity-alta {
+    background-color: #f5c6cb;
+    border-color: #dc3545;
+}
+
+#nonCompliant li strong {
+    color: #333;
+}
+
+#nonCompliant li code {
+    background-color: #eee;
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace;
+}
+
+#chart-container {
+    margin-top: 20px;
+    text-align: center;
+}
+
+#export-report-btn {
+    width: auto; /* Allow button to size based on content */
+    padding: 10px 20px; /* Adjust padding for smaller size */
+    margin: 20px auto; /* Center the button */
+    display: block; /* Ensure it takes up its own line */
+}
