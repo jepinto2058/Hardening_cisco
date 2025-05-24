@@ -115,9 +115,18 @@ button:hover {
     text-align: center;
 }
 
-#export-report-btn {
-    width: auto; /* Allow button to size based on content */
-    padding: 10px 20px; /* Adjust padding for smaller size */
-    margin: 20px auto; /* Center the button */
-    display: block; /* Ensure it takes up its own line */
+/* Estilos para los botones de exportación */
+#export-report-btn,
+#export-json-btn,
+#export-csv-btn {
+    width: auto; /* Permite que el botón se ajuste al contenido */
+    padding: 10px 20px; /* Ajusta el padding para un tamaño más pequeño */
+    margin: 10px 5px; /* Añade margen entre los botones */
+    display: inline-block; /* Muestra los botones en línea */
+}
+
+#export-report-btn:hover,
+#export-json-btn:hover,
+#export-csv-btn:hover {
+    background-color: #0056b3;
 }

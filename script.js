@@ -15,6 +15,7 @@ function analyzeConfig() {
         reader.onload = function(event) {
             const configText = event.target.result;
             const analysisResults = analyzeCiscoConfig(configText);
+            window.lastAnalysisResults = analysisResults; // Store results globally for export
             displayResults(analysisResults);
         }
 
@@ -31,12 +32,15 @@ document.addEventListener('DOMContentLoaded', (event) => {
         const fileName = this.files[0]?.name;
         document.getElementById('file-name').textContent = fileName ? 'Archivo seleccionado: ' + fileName : '';
     });
+    // Add event listeners for new export buttons
+    document.getElementById('export-json-btn').addEventListener('click', exportJSON);
+    document.getElementById('export-csv-btn').addEventListener('click', exportCSV);
 });
 
 
 function analyzeCiscoConfig(configText) {
-    const compliant = [];
-    const nonCompliant = [];
+    let compliant = [];
+    let nonCompliant = [];
 
     // Detectar el tipo de sistema operativo
     let osType = 'IOS';
@@ -509,7 +513,82 @@ function analyzeCiscoConfig(configText) {
     console.log("OS Type detected:", osType);
     console.log("OS Version extracted:", osVersion);
 
+    const vlanAnalysis = analyzeVlanSecurity(configText);
+    compliant.push(...vlanAnalysis.compliant);
+    nonCompliant.push(...vlanAnalysis.nonCompliant);
+
+    // Call the new function and merge results
+    const unusedInterfacesAnalysis = analyzeUnusedInterfaces(configText);
+    compliant = compliant.concat(unusedInterfacesAnalysis.compliant);
+    nonCompliant = nonCompliant.concat(unusedInterfacesAnalysis.nonCompliant);
+
+
     return { compliant, nonCompliant, riskScore, severityCounts, configText, osType, osVersion }; // Return osType and osVersion
+}
+
+function analyzeVlanSecurity(configText) {
+    const compliant = [];
+    const nonCompliant = [];
+
+    // Regex para encontrar configuraciones de interfaz que asignan VLANs
+    // Busca líneas que empiecen con 'interface', seguidas de cualquier caracter,
+    // y luego líneas que contengan 'switchport access vlan' o 'switchport trunk native vlan'
+    const interfaceBlocks = configText.split(/(?=^interface)/m).filter(block => block.trim().startsWith('interface'));
+
+    interfaceBlocks.forEach(block => {
+        const interfaceMatch = block.match(/^interface (\S+)/m);
+        if (interfaceMatch) {
+            const interfaceName = interfaceMatch[1];
+
+            // Verificar si la VLAN 1 está configurada como VLAN de acceso
+            const accessVlanMatch = block.match(/^\s*switchport access vlan (\d+)/m);
+            if (accessVlanMatch && parseInt(accessVlanMatch[1]) === 1) {
+                nonCompliant.push({
+                    severity: 'Alta',
+                    context: block.trim().split('\n').filter(line => line.trim().startsWith('interface') || line.trim().includes('switchport access vlan')).join('\n'),
+                    recommendation: `Cambie la VLAN de acceso para la interfaz ${interfaceName} a una VLAN diferente a la por defecto (VLAN 1).`,
+                    solution: `interface ${interfaceName}\n switchport access vlan <nueva_vlan>`,
+                    description: `La interfaz ${interfaceName} está configurada con la VLAN de acceso por defecto (VLAN 1).`
+                });
+            }
+
+            // Verificar si la VLAN 1 está configurada como VLAN nativa en un trunk
+            const nativeVlanMatch = block.match(/^\s*switchport trunk native vlan (\d+)/m);
+            if (nativeVlanMatch && parseInt(nativeVlanMatch[1]) === 1) {
+                 nonCompliant.push({
+                    severity: 'Alta',
+                    context: block.trim().split('\n').filter(line => line.trim().startsWith('interface') || line.trim().includes('switchport trunk native vlan')).join('\n'),
+                    recommendation: `Cambie la VLAN nativa para el trunk en la interfaz ${interfaceName} a una VLAN diferente a la por defecto (VLAN 1).`,
+                    solution: `interface ${interfaceName}\n switchport trunk native vlan <nueva_vlan>`,
+                    description: `La interfaz ${interfaceName} está configurada con la VLAN nativa por defecto (VLAN 1) en un trunk.`
+                });
+            }
+
+            // Verificar si la interfaz no tiene configuración de VLAN explícita (implica VLAN 1 por defecto)
+            const hasVlanConfig = accessVlanMatch || nativeVlanMatch || block.includes('switchport mode access') || block.includes('switchport mode trunk');
+            const isShutdown = block.includes('shutdown');
+            const isNoSwitchport = block.includes('no switchport');
+
+            // Aplicar este análisis solo a interfaces que no sean VLAN
+            if (!interfaceName.startsWith('Vlan') && !hasVlanConfig && !isShutdown && !isNoSwitchport) {
+                 nonCompliant.push({
+                    severity: 'Media',
+                    context: block.trim().split('\n').filter(line => line.trim().startsWith('interface')).join('\n'),
+                    recommendation: `Configure explícitamente la VLAN de acceso o nativa para la interfaz ${interfaceName}, o deshabilítela si no está en uso. Evite depender de la asignación implícita a la VLAN 1.`,
+                    solution: `interface ${interfaceName}\n switchport access vlan <nueva_vlan> OR shutdown`,
+                    description: `La interfaz ${interfaceName} no tiene una configuración de VLAN explícita y podría estar usando la VLAN 1 por defecto.`
+                });
+            }
+        }
+    });
+
+    // Verificar si la VLAN 1 está presente en la configuración global de VLANs (aunque esto es común, es bueno mencionarlo)
+    if (configText.includes('vlan 1')) {
+        compliant.push('La VLAN 1 por defecto está presente en la configuración global de VLANs.');
+    }
+
+
+    return { compliant, nonCompliant };
 }
 
 function displayResults(results) {
@@ -554,6 +633,9 @@ function displayResults(results) {
 
     // Enable the export button
     document.getElementById('export-report-btn').disabled = false;
+    document.getElementById('export-json-btn').disabled = false;
+    document.getElementById('export-csv-btn').disabled = false;
+
 
     // Render severity chart
     const severityCounts = results.severityCounts;
@@ -613,254 +695,191 @@ function displayResults(results) {
     });
 }
 
-
+console.log("Verificando si jsPDF está disponible:", window.jspdf);
 async function exportReport() {
-    console.log("exportReport function called");
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF();
-    let yOffset = 10; // Vertical offset for adding content
-
-    const addText = (text, x, y, options = {}) => {
-        doc.text(text, x, y, options);
-        yOffset = y + 7; // Update offset for next content
-    };
-
-    const addTitle = (text) => {
-        doc.setFontSize(18);
-        doc.text(text, 10, yOffset);
-        yOffset += 10;
-        doc.setFontSize(12); // Reset font size
-    };
-
-    const addSectionTitle = (text) => {
-        doc.setFontSize(14);
-        doc.text(text, 10, yOffset);
-        yOffset += 8;
-        doc.setFontSize(12); // Reset font size
-    };
-
-    const addParagraph = (text) => {
-        const lines = doc.splitTextToSize(text, 180); // Wrap text
-        doc.text(lines, 10, yOffset);
-        yOffset += (lines.length * 5) + 5;
-    };
-
-    const addList = (items) => {
-        items.forEach(item => {
-            const lines = doc.splitTextToSize(`- ${item}`, 180);
-            doc.text(lines, 15, yOffset);
-            yOffset += (lines.length * 5);
-        });
-        yOffset += 5;
-    };
-
-    const addKeyValuePair = (key, value) => {
-        addParagraph(`<strong>${key}:</strong> ${value}`);
-    };
-
-    const addFinding = (finding) => {
-        doc.setFontSize(12);
-        addParagraph(`<strong>Descripción:</strong> ${finding.description}`);
-        addParagraph(`<strong>Gravedad:</strong> ${finding.severity}`);
-        addParagraph(`<strong>Contexto:</strong> <code>${finding.context}</code>`);
-        addParagraph(`<strong>Recomendación:</strong> ${finding.recommendation}`);
-        addParagraph(`<strong>Mitigar:</strong> <code>${finding.solution}</code>`);
-        yOffset += 5; // Add space between findings
-    };
-
-    const addChart = async (chartId, title) => {
-        addSectionTitle(title);
-        const canvas = document.getElementById(chartId);
-        if (canvas) {
-            const imgData = await html2canvas(canvas).then(canvas => canvas.toDataURL('image/png'));
-            const imgWidth = 180; // Adjust as needed
-            const imgHeight = canvas.height * imgWidth / canvas.width;
-            doc.addImage(imgData, 'PNG', 10, yOffset, imgWidth, imgHeight);
-            yOffset += imgHeight + 10;
-        } else {
-            addParagraph(`No se pudo generar el gráfico: ${title}`);
-        }
-    };
-
-    const addTemporaryChart = async (chartConfig, title) => {
-        addSectionTitle(title);
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = 600; // Match display chart size
-        tempCanvas.height = 300; // Match display chart size
-        const tempCtx = tempCanvas.getContext('2d');
-
-        new Chart(tempCtx, chartConfig);
-
-        const imgData = await html2canvas(tempCanvas).then(canvas => canvas.toDataURL('image/png'));
-        const imgWidth = 180; // Adjust as needed
-        const imgHeight = tempCanvas.height * imgWidth / tempCanvas.width;
-        doc.addImage(imgData, 'PNG', 10, yOffset, imgWidth, imgHeight);
-        yOffset += imgHeight + 10;
-
-        // Clean up the temporary canvas
-        tempCanvas.remove();
-    };
-
-
+    console.log("exportReport function called"); // Added console log
     const results = window.lastAnalysisResults;
     if (!results) {
         alert("No hay resultados de análisis para exportar. Por favor, analiza una configuración primero.");
         console.error("No analysis results available for export.");
-        console.log("No analysis results available for export."); // Added console log
         return;
     }
-    console.log("Analysis results found:", results);
+    console.log("Analysis results found:", results); // Added console log
 
-    // --- Portada ---
-    addTitle("Informe de Análisis de Configuración Cisco");
-    addText("Generado por: CybersecurityJP - Analizador de Vulnerabilidades en Configuraciones Cisco", 10, yOffset);
-    addText(`Fecha del Análisis: ${new Date().toLocaleDateString()}`, 10, yOffset);
-    yOffset += 20; // Add some space after cover
-
-    // --- Índice (Placeholder) ---
-    doc.addPage();
-    yOffset = 10;
-    addTitle("Índice");
-    addParagraph("Este índice se generará dinámicamente."); // Placeholder for now
-
-    // --- Introducción ---
-    doc.addPage();
-    yOffset = 10;
-    addSectionTitle("1. Introducción");
-    addParagraph("Este informe presenta los resultados del análisis de seguridad realizado sobre el archivo de configuración de un dispositivo Cisco. El análisis se centra en identificar posibles vulnerabilidades y desviaciones de las buenas prácticas de seguridad recomendadas.");
-
-    // --- Resumen Ejecutivo ---
-    doc.addPage();
-    yOffset = 10;
-    addSectionTitle("2. Resumen Ejecutivo");
-    addParagraph(`El análisis identificó ${results.nonCompliant.length} hallazgos de seguridad y ${results.compliant.length} puntos de cumplimiento en la configuración del dispositivo. La puntuación de riesgo calculada es de ${results.riskScore}.`);
-    // Add more summary details if needed
-
-    // --- Datos del Dispositivo Analizado ---
-    doc.addPage();
-    yOffset = 10;
-    addSectionTitle("3. Datos del Dispositivo Analizado");
-    addKeyValuePair("Nombre del Archivo de Configuración", document.getElementById('file-name').textContent.replace('Archivo seleccionado: ', ''));
-    addKeyValuePair("Fecha del Análisis", document.getElementById('analysis-date').textContent);
-    addKeyValuePair("Sistema Operativo Detectado", document.getElementById('os-type').textContent); // Display OS Type
-    addKeyValuePair("Versión del Sistema Operativo", document.getElementById('ios-version').textContent); // Display OS Version
-    // Add more device data if available from configText
-
-    // --- Puntos de Cumplimiento ---
-    doc.addPage();
-    yOffset = 10;
-    addSectionTitle("4. Puntos de Cumplimiento");
-    if (results.compliant.length > 0) {
-        addList(results.compliant);
-    } else {
-        addParagraph("No se identificaron puntos de cumplimiento específicos en este análisis.");
+    // Verificar que las librerías necesarias estén cargadas
+    console.log("Estado de jspdf:", typeof jspdf, typeof jspdf?.jsPDF);
+    if (typeof jspdf === 'undefined' || typeof jspdf.jsPDF === 'undefined') {
+        alert("Error: jsPDF no está cargado. Asegúrese de que la biblioteca esté incluida.");
+        console.error("jsPDF library not loaded.");
+        return;
     }
+    console.log("Estado de html2canvas:", typeof html2canvas);
+    if (typeof html2canvas !== 'function') {
+         alert("Error: html2canvas no está cargado. Asegúrese de que la biblioteca esté incluida.");
+         console.error("html2canvas library not loaded.");
+         return;
+    }
+     // jsPdfAutoTable extiende jsPDF, verificar si autoTable está disponible en una instancia de jsPDF
+     const tempDocForCheck = new jspdf.jsPDF();
+     console.log("Estado de autoTable en instancia de jsPDF:", typeof tempDocForCheck.autoTable);
+     if (typeof tempDocForCheck.autoTable !== 'function') {
+         alert("Error: jsPdfAutoTable no está cargado. Asegúrese de que la biblioteca esté incluida DESPUÉS de jsPDF.");
+         console.error("jsPdfAutoTable library not loaded or not correctly attached to jsPDF.");
+         return;
+     }
 
 
-    // --- Hallazgos ---
-    doc.addPage();
-    yOffset = 10;
-    addSectionTitle("5. Hallazgos");
-    if (results.nonCompliant.length > 0) {
-        results.nonCompliant.forEach(finding => {
-            addFinding(finding);
+    try { // Added try...catch block
+        console.log("Inicializando jsPDF document.");
+        // Inicializar PDF con orientación y unidad
+        const doc = new jspdf.jsPDF({
+            orientation: 'portrait',
+            unit: 'mm',
+            format: 'a4'
         });
-    } else {
-        addParagraph("No se identificaron hallazgos de seguridad en este análisis.");
-    }
 
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const pageHeight = doc.internal.pageSize.getHeight();
+        let y = 20; // Margen superior inicial
 
-    // --- Gráficos ---
-    doc.addPage();
-    yOffset = 10;
-    addSectionTitle("6. Gráficos del Análisis");
-    addParagraph("Los siguientes gráficos resumen los resultados del análisis:");
+        const addHeader = () => {
+            doc.setFontSize(10);
+            doc.setTextColor(100);
+            doc.text("Informe de Análisis Cisco", 14, 10);
+            doc.text(`Fecha: ${new Date().toLocaleDateString()}`, pageWidth - 50, 10);
+            doc.setDrawColor(200, 200, 200);
+            doc.line(10, 12, pageWidth - 10, 12); // Línea divisoria
+        };
 
-    // Gráfico de Nivel de Cumplimiento
-    const compliantChartConfig = {
-        type: 'pie',
-        data: {
-            labels: ['Cumplimientos', 'Hallazgos'],
-            datasets: [{
-                data: [results.compliant.length, results.nonCompliant.length],
-                backgroundColor: [
-                    'rgba(75, 192, 192, 0.5)', // Green for Compliant
-                    'rgba(255, 99, 132, 0.5)'  // Red for Non-Compliant
-                ],
-                borderColor: [
-                    'rgba(75, 192, 192, 1)',
-                    'rgba(255, 99, 132, 1)'
-                ],
-                borderWidth: 1
-            }]
-        },
-        options: {
-            responsive: false, // Important for html2canvas
-            maintainAspectRatio: false, // Important for html2canvas
-            plugins: {
-                title: {
-                    display: true,
-                    text: 'Nivel de Cumplimiento'
-                }
+        const addFooter = (page) => {
+            doc.setFontSize(8);
+            doc.setTextColor(150);
+            doc.text("© CybersecurityJP - Analizador de Hardening Cisco", 10, pageHeight - 15);
+            doc.text(`Página ${page}`, pageWidth - 30, pageHeight - 15);
+        };
+
+        // --- PORTADA ---
+        addHeader();
+        doc.setFontSize(20);
+        doc.setTextColor(0, 70, 150);
+        doc.text("Informe de Análisis Cisco", 60, y);
+        y += 15;
+
+        doc.setFontSize(12);
+        doc.setTextColor(0);
+        doc.text("Herramienta: CybersecurityJP - Evaluador de Configuraciones Cisco", 20, y);
+        y += 10;
+        doc.text(`Archivo: ${document.getElementById('file-name').textContent.replace('Archivo seleccionado: ', '')}`, 20, y);
+        y += 10;
+        doc.text(`Sistema Operativo: ${results.osType} / Versión: ${results.osVersion}`, 20, y);
+        y += 10;
+        doc.text(`Puntuación de Riesgo: ${results.riskScore}`, 20, y);
+        y += 15;
+
+        doc.addPage();
+
+        // --- RESUMEN EJECUTIVO ---
+        addHeader();
+        y = 20;
+        doc.setFontSize(16);
+        doc.setTextColor(0, 70, 150);
+        doc.text("Resumen Ejecutivo", 14, y);
+        y += 10;
+
+        doc.setFontSize(12);
+        doc.setTextColor(0);
+        doc.text(`Se han identificado ${results.nonCompliant.length} hallazgos de seguridad y ${results.compliant.length} puntos de cumplimiento.`, 14, y);
+        y += 10;
+
+        // Tabla de resumen
+        console.log("Generando tabla de resumen con autoTable.");
+        doc.autoTable({
+            startY: y,
+            head: [['Gravedad', 'Cantidad']],
+            body: [
+                ['Alta', results.severityCounts.Alta],
+                ['Media', results.severityCounts.Media],
+                ['Baja', results.severityCounts.Baja]
+            ],
+            theme: 'grid',
+            styles: { fontSize: 10 },
+            headStyles: { fillColor: [0, 100, 200] }
+        });
+        y = doc.lastAutoTable.finalY + 10;
+
+        if (y > pageHeight - 40) {
+            doc.addPage();
+            y = 20;
+        }
+
+        // --- HALLAZGOS DE SEGURIDAD ---
+        addHeader();
+        doc.setFontSize(16);
+        doc.setTextColor(0, 70, 150);
+        doc.text("Hallazgos de Seguridad", 14, y);
+        y += 10;
+
+        const tableRows = results.nonCompliant.map(item => [
+            item.severity,
+            item.description,
+            item.recommendation,
+            item.solution
+        ]);
+        console.log("Datos para la tabla de hallazgos:", tableRows);
+
+        doc.autoTable({
+            startY: y,
+            head: [['Gravedad', 'Descripción', 'Recomendación', 'Solución']],
+            body: tableRows,
+            theme: 'striped',
+            styles: { fontSize: 9 },
+            columnStyles: {
+                0: { cellWidth: 20 },
+                1: { cellWidth: 45 },
+                2: { cellWidth: 45 },
+                3: { cellWidth: 45 }
+            },
+            didDrawPage: function (data) {
+                addFooter(data.pageNumber);
+            }
+        });
+
+        // --- GRÁFICO DEL ANÁLISIS ---
+        const canvas = document.getElementById('severityChart');
+        if (canvas) {
+            try { // Added try...catch for chart generation
+                console.log("Generando imagen del gráfico con html2canvas.");
+                const imgData = await html2canvas(canvas).then(canvas => canvas.toDataURL('image/png'));
+                console.log("Imagen del gráfico generada.");
+                const imgProps = doc.getImageProperties(imgData);
+                const pdfWidth = pageWidth - 20;
+                const imgWidth = pdfWidth;
+                const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
+
+                doc.addPage();
+                addHeader();
+                y = 20;
+                doc.setFontSize(16);
+                doc.setTextColor(0, 70, 150);
+                doc.text("Gráfico de Hallazgos por Gravedad", 14, y);
+                y += 10;
+                doc.addImage(imgData, 'PNG', 10, y, imgWidth, imgHeight);
+            } catch (error) {
+                console.error("Error al generar el gráfico:", error);
+                // Optionally add text to the PDF indicating chart error
+                // doc.text("Error al generar el gráfico.", 14, y + 10);
             }
         }
-    };
-    await addTemporaryChart(compliantChartConfig, "Gráfico de Nivel de Cumplimiento");
 
 
-    // Gráfico de Nivel de Riesgo (Simple Bar or Gauge - Bar is easier with Chart.js)
-    const riskChartConfig = {
-         type: 'bar',
-         data: {
-             labels: ['Puntuación de Riesgo'],
-             datasets: [{
-                 label: 'Puntuación',
-                 data: [results.riskScore],
-                 backgroundColor: results.riskScore > 50 ? 'rgba(255, 99, 132, 0.5)' : (results.riskScore > 20 ? 'rgba(255, 159, 64, 0.5)' : 'rgba(75, 192, 192, 0.5)'),
-                 borderColor: results.riskScore > 50 ? 'rgba(255, 99, 132, 1)' : (results.riskScore > 20 ? 'rgba(255, 159, 64, 1)' : 'rgba(75, 192, 192, 1)'),
-                 borderWidth: 1
-             }]
-         },
-         options: {
-             responsive: false, // Important for html2canvas
-             maintainAspectRatio: false, // Important for html2canvas
-             scales: {
-                 y: {
-                     beginAtZero: true,
-                     max: 100, // Assuming a max risk score of 100 for visualization
-                     title: {
-                         display: true,
-                         text: 'Puntuación de Riesgo'
-                     }
-                 }
-             },
-             plugins: {
-                 legend: {
-                     display: false
-                 },
-                 title: {
-                     display: true,
-                     text: 'Nivel de Riesgo'
-                 }
-             }
-         }
-     };
-     await addTemporaryChart(riskChartConfig, "Gráfico de Nivel de Riesgo");
+        // Guardar documento
+        console.log("Guardando documento PDF.");
+        doc.save("informe_analisis_cisco.pdf");
 
-
-    // Gráfico Resumen de Vulnerabilidades (Severity Chart)
-    await addChart('severityChart', "Gráfico Resumen de Vulnerabilidades por Gravedad");
-
-
-    // --- Conclusión ---
-    doc.addPage();
-    yOffset = 10;
-    addSectionTitle("7. Conclusión");
-    addParagraph("Este informe proporciona una visión general de la postura de seguridad del dispositivo analizado. Se recomienda revisar los hallazgos y aplicar las soluciones propuestas para mejorar la seguridad.");
-
-
-    // Save the PDF
-    doc.save("informe_analisis_cisco.pdf");
+    } catch (error) { // Catch any errors during PDF generation
+        console.error("Error durante la generación del PDF:", error);
+        alert("Ocurrió un error al generar el informe PDF. Por favor, revisa la consola para más detalles.");
+    }
 }
 
 
@@ -960,440 +979,90 @@ function analyzeRadiusConfig(configText) {
     return { compliant, nonCompliant };
 }
 
-function displayResults(results) {
-    const compliantList = document.getElementById('compliant').querySelector('ul');
-    const nonCompliantList = document.getElementById('nonCompliant').querySelector('ul');
-    const analysisDate = new Date().toLocaleDateString();
-    const iosVersion = results.iosVersion; // Use extracted IOS version
-    const compliantCount = results.compliant.length;
-    const nonCompliantCount = results.nonCompliant.length;
-    const riskScore = results.riskScore;
-
-    document.getElementById('analysis-date').textContent = analysisDate;
-    document.getElementById('ios-version').textContent = iosVersion;
-    document.getElementById('compliant-count').textContent = compliantCount;
-    document.getElementById('non-compliant-count').textContent = nonCompliantCount;
-    document.getElementById('risk-score').textContent = riskScore;
-
-    compliantList.innerHTML = '';
-    nonCompliantList.innerHTML = '';
-
-    results.compliant.forEach(item => {
-        const li = document.createElement('li');
-        li.textContent = item;
-        compliantList.appendChild(li);
-    });
-
-    results.nonCompliant.forEach(item => {
-        const li = document.createElement('li');
-        li.classList.add(`severity-${item.severity.toLowerCase()}`);
-        li.innerHTML = `
-            <strong>${item.description}</strong>
-            <p><strong>Gravedad:</strong> ${item.severity}</p>
-            <p><strong>Contexto:</strong> <code>${item.context}</code></p>
-            <p><strong>Recomendación:</strong> ${item.recommendation}</p>
-            <p><strong>Mitigar:</strong> <code>${item.solution}</code></p>
-        `;
-        nonCompliantList.appendChild(li);
-    });
-
-    // Enable the export button
-    document.getElementById('export-report-btn').disabled = false;
-
-    // Render severity chart
-    const severityCounts = results.severityCounts;
-    const ctx = document.getElementById('severityChart').getContext('2d');
-
-    new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: ['Alta', 'Media', 'Baja'],
-            datasets: [{
-                label: 'Cantidad de Hallazgos por Gravedad',
-                data: [severityCounts.Alta, severityCounts.Media, severityCounts.Baja],
-                backgroundColor: [
-                    'rgba(255, 99, 132, 0.5)', // Red for Alta
-                    'rgba(255, 159, 64, 0.5)', // Orange for Media
-                    'rgba(75, 192, 192, 0.5)'  // Green for Baja
-                ],
-                borderColor: [
-                    'rgba(255, 99, 132, 1)',
-                    'rgba(255, 159, 64, 1)',
-                    'rgba(75, 192, 192, 1)'
-                ],
-                borderWidth: 1
-            }]
-        },
-        options: {
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    title: {
-                        display: true,
-                        text: 'Cantidad de Hallazgos'
-                    }
-                },
-                x: {
-                     title: {
-                        display: true,
-                        text: 'Gravedad'
-                    }
-                }
-            },
-            plugins: {
-                legend: {
-                    display: false
-                },
-                title: {
-                    display: true,
-                    text: 'Resumen de Hallazgos por Gravedad'
-                }
-            }
-        }
-    });
-}
-
-
-async function exportReport() {
-    console.log("exportReport function called");
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF();
-    let yOffset = 10; // Vertical offset for adding content
-
-    const addText = (text, x, y, options = {}) => {
-        doc.text(text, x, y, options);
-        yOffset = y + 7; // Update offset for next content
-    };
-
-    const addTitle = (text) => {
-        doc.setFontSize(18);
-        doc.text(text, 10, yOffset);
-        yOffset += 10;
-        doc.setFontSize(12); // Reset font size
-    };
-
-    const addSectionTitle = (text) => {
-        doc.setFontSize(14);
-        doc.text(text, 10, yOffset);
-        yOffset += 8;
-        doc.setFontSize(12); // Reset font size
-    };
-
-    const addParagraph = (text) => {
-        const lines = doc.splitTextToSize(text, 180); // Wrap text
-        doc.text(lines, 10, yOffset);
-        yOffset += (lines.length * 5) + 5;
-    };
-
-    const addList = (items) => {
-        items.forEach(item => {
-            const lines = doc.splitTextToSize(`- ${item}`, 180);
-            doc.text(lines, 15, yOffset);
-            yOffset += (lines.length * 5);
-        });
-        yOffset += 5;
-    };
-
-    const addKeyValuePair = (key, value) => {
-        addParagraph(`<strong>${key}:</strong> ${value}`);
-    };
-
-    const addFinding = (finding) => {
-        doc.setFontSize(12);
-        addParagraph(`<strong>Descripción:</strong> ${finding.description}`);
-        addParagraph(`<strong>Gravedad:</strong> ${finding.severity}`);
-        addParagraph(`<strong>Contexto:</strong> <code>${finding.context}</code>`);
-        addParagraph(`<strong>Recomendación:</strong> ${finding.recommendation}`);
-        addParagraph(`<strong>Mitigar:</strong> <code>${finding.solution}</code>`);
-        yOffset += 5; // Add space between findings
-    };
-
-    const addChart = async (chartId, title) => {
-        addSectionTitle(title);
-        const canvas = document.getElementById(chartId);
-        if (canvas) {
-            const imgData = await html2canvas(canvas).then(canvas => canvas.toDataURL('image/png'));
-            const imgWidth = 180; // Adjust as needed
-            const imgHeight = canvas.height * imgWidth / canvas.width;
-            doc.addImage(imgData, 'PNG', 10, yOffset, imgWidth, imgHeight);
-            yOffset += imgHeight + 10;
-        } else {
-            addParagraph(`No se pudo generar el gráfico: ${title}`);
-        }
-    };
-
-    const addTemporaryChart = async (chartConfig, title) => {
-        addSectionTitle(title);
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = 600; // Match display chart size
-        tempCanvas.height = 300; // Match display chart size
-        const tempCtx = tempCanvas.getContext('2d');
-
-        new Chart(tempCtx, chartConfig);
-
-        const imgData = await html2canvas(tempCanvas).then(canvas => canvas.toDataURL('image/png'));
-        const imgWidth = 180; // Adjust as needed
-        const imgHeight = tempCanvas.height * imgWidth / tempCanvas.width;
-        doc.addImage(imgData, 'PNG', 10, yOffset, imgWidth, imgHeight);
-        yOffset += imgHeight + 10;
-
-        // Clean up the temporary canvas
-        tempCanvas.remove();
-    };
-
-
-    const results = window.lastAnalysisResults;
-    if (!results) {
-        alert("No hay resultados de análisis para exportar. Por favor, analiza una configuración primero.");
-        console.error("No analysis results available for export.");
-        console.log("No analysis results available for export."); // Added console log
+// Function to export data as JSON
+function exportJSON() {
+    const data = window.lastAnalysisResults; // Get the last analysis results
+    if (!data) {
+        alert("No hay resultados de análisis para exportar a JSON.");
         return;
     }
-    console.log("Analysis results found:", results);
 
-    // --- Portada ---
-    addTitle("Informe de Análisis de Configuración Cisco");
-    addText("Generado por: CybersecurityJP - Analizador de Vulnerabilidades en Configuraciones Cisco", 10, yOffset);
-    addText(`Fecha del Análisis: ${new Date().toLocaleDateString()}`, 10, yOffset);
-    yOffset += 20; // Add some space after cover
+    const jsonData = JSON.stringify(data, null, 2); // Convert data to JSON string with indentation
+    const blob = new Blob([jsonData], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'informe_analisis_cisco.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url); // Clean up the URL object
+}
 
-    // --- Índice (Placeholder) ---
-    doc.addPage();
-    yOffset = 10;
-    addTitle("Índice");
-    addParagraph("Este índice se generará dinámicamente."); // Placeholder for now
-
-    // --- Introducción ---
-    doc.addPage();
-    yOffset = 10;
-    addSectionTitle("1. Introducción");
-    addParagraph("Este informe presenta los resultados del análisis de seguridad realizado sobre el archivo de configuración de un dispositivo Cisco. El análisis se centra en identificar posibles vulnerabilidades y desviaciones de las buenas prácticas de seguridad recomendadas.");
-
-    // --- Resumen Ejecutivo ---
-    doc.addPage();
-    yOffset = 10;
-    addSectionTitle("2. Resumen Ejecutivo");
-    addParagraph(`El análisis identificó ${results.nonCompliant.length} hallazgos de seguridad y ${results.compliant.length} puntos de cumplimiento en la configuración del dispositivo. La puntuación de riesgo calculada es de ${results.riskScore}.`);
-    // Add more summary details if needed
-
-    // --- Datos del Dispositivo Analizado ---
-    doc.addPage();
-    yOffset = 10;
-    addSectionTitle("3. Datos del Dispositivo Analizado");
-    addKeyValuePair("Nombre del Archivo de Configuración", document.getElementById('file-name').textContent.replace('Archivo seleccionado: ', ''));
-    addKeyValuePair("Fecha del Análisis", document.getElementById('analysis-date').textContent);
-    addKeyValuePair("Versión IOS Detectada (Estimada)", document.getElementById('ios-version').textContent); // Placeholder
-    // Add more device data if available from configText
-
-    // --- Puntos de Cumplimiento ---
-    doc.addPage();
-    yOffset = 10;
-    addSectionTitle("4. Puntos de Cumplimiento");
-    if (results.compliant.length > 0) {
-        addList(results.compliant);
-    } else {
-        addParagraph("No se identificaron puntos de cumplimiento específicos en este análisis.");
+// Function to export data as CSV
+function exportCSV() {
+    const data = window.lastAnalysisResults; // Get the last analysis results
+    if (!data || !data.nonCompliant || data.nonCompliant.length === 0) {
+        alert("No hay hallazgos no conformes para exportar a CSV.");
+        return;
     }
 
+    const nonCompliant = data.nonCompliant;
+    const header = ["Gravedad", "Descripción", "Contexto", "Recomendación", "Solución"];
+    const rows = nonCompliant.map(item => [
+        item.severity,
+        item.description.replace(/,/g, ';').replace(/\n/g, ' '), // Replace commas and newlines in description
+        item.context.replace(/,/g, ';').replace(/\n/g, ' '),     // Replace commas and newlines in context
+        item.recommendation.replace(/,/g, ';').replace(/\n/g, ' '), // Replace commas and newlines in recommendation
+        item.solution.replace(/,/g, ';').replace(/\n/g, ' ')      // Replace commas and newlines in solution
+    ]);
 
-    // --- Hallazgos ---
-    doc.addPage();
-    yOffset = 10;
-    addSectionTitle("5. Hallazgos");
-    if (results.nonCompliant.length > 0) {
-        results.nonCompliant.forEach(finding => {
-            addFinding(finding);
-        });
-    } else {
-        addParagraph("No se identificaron hallazgos de seguridad en este análisis.");
-    }
+    let csvContent = header.join(",") + "\n";
+    rows.forEach(row => {
+        csvContent += row.join(",") + "\n";
+    });
 
-
-    // --- Gráficos ---
-    doc.addPage();
-    yOffset = 10;
-    addSectionTitle("6. Gráficos del Análisis");
-    addParagraph("Los siguientes gráficos resumen los resultados del análisis:");
-
-    // Gráfico de Nivel de Cumplimiento
-    const compliantChartConfig = {
-        type: 'pie',
-        data: {
-            labels: ['Cumplimientos', 'Hallazgos'],
-            datasets: [{
-                data: [results.compliant.length, results.nonCompliant.length],
-                backgroundColor: [
-                    'rgba(75, 192, 192, 0.5)', // Green for Compliant
-                    'rgba(255, 99, 132, 0.5)'  // Red for Non-Compliant
-                ],
-                borderColor: [
-                    'rgba(75, 192, 192, 1)',
-                    'rgba(255, 99, 132, 1)'
-                ],
-                borderWidth: 1
-            }]
-        },
-        options: {
-            responsive: false, // Important for html2canvas
-            maintainAspectRatio: false, // Important for html2canvas
-            plugins: {
-                title: {
-                    display: true,
-                    text: 'Nivel de Cumplimiento'
-                }
-            }
-        }
-    };
-    await addTemporaryChart(compliantChartConfig, "Gráfico de Nivel de Cumplimiento");
-
-
-    // Gráfico de Nivel de Riesgo (Simple Bar or Gauge - Bar is easier with Chart.js)
-    const riskChartConfig = {
-         type: 'bar',
-         data: {
-             labels: ['Puntuación de Riesgo'],
-             datasets: [{
-                 label: 'Puntuación',
-                 data: [results.riskScore],
-                 backgroundColor: results.riskScore > 50 ? 'rgba(255, 99, 132, 0.5)' : (results.riskScore > 20 ? 'rgba(255, 159, 64, 0.5)' : 'rgba(75, 192, 192, 0.5)'),
-                 borderColor: results.riskScore > 50 ? 'rgba(255, 99, 132, 1)' : (results.riskScore > 20 ? 'rgba(255, 159, 64, 1)' : 'rgba(75, 192, 192, 1)'),
-                 borderWidth: 1
-             }]
-         },
-         options: {
-             responsive: false, // Important for html2canvas
-             maintainAspectRatio: false, // Important for html2canvas
-             scales: {
-                 y: {
-                     beginAtZero: true,
-                     max: 100, // Assuming a max risk score of 100 for visualization
-                     title: {
-                         display: true,
-                         text: 'Puntuación de Riesgo'
-                     }
-                 }
-             },
-             plugins: {
-                 legend: {
-                     display: false
-                 },
-                 title: {
-                     display: true,
-                     text: 'Nivel de Riesgo'
-                 }
-             }
-         }
-     };
-     await addTemporaryChart(riskChartConfig, "Gráfico de Nivel de Riesgo");
-
-
-    // Gráfico Resumen de Vulnerabilidades (Severity Chart)
-    await addChart('severityChart', "Gráfico Resumen de Vulnerabilidades por Gravedad");
-
-
-    // --- Conclusión ---
-    doc.addPage();
-    yOffset = 10;
-    addSectionTitle("7. Conclusión");
-    addParagraph("Este informe proporciona una visión general de la postura de seguridad del dispositivo analizado. Se recomienda revisar los hallazgos y aplicar las soluciones propuestas para mejorar la seguridad.");
-
-
-    // Save the PDF
-    doc.save("informe_analisis_cisco.pdf");
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'hallazgos_no_conformes.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url); // Clean up the URL object
 }
 
 
-function analyzeRadiusConfig(configText) {
+function analyzeUnusedInterfaces(configText) {
     const compliant = [];
     const nonCompliant = [];
 
-    // Analyze aaa authentication login REMOTO group radius local enable
-    if (configText.includes('aaa authentication login REMOTO group radius local enable')) {
-        compliant.push('Configuración AAA authentication login REMOTO group radius local enable encontrada (cumple con la buena práctica de usar RADIUS con fallback local).');
-    } else {
-        nonCompliant.push({
-            severity: 'Alta',
-            context: 'Sin aaa authentication login REMOTO group radius local enable',
-            recommendation: 'Configure AAA authentication login para usar RADIUS con un método de fallback local.',
-            solution: 'aaa authentication login REMOTO group radius local enable',
-            description: 'La configuración AAA authentication login REMOTO group radius local enable no está presente.'
-        });
-    }
+    // Busca interfaces físicas en estado administrativo up pero operativo down
+    const interfaceMatches = configText.match(/interface (\w+\d+)(?:\.\d+)?(?:[\s\S]*?)(?=\ninterface|\nend)/g) || [];
 
-    // Analyze ip radius source-interface
-    const radiusSourceInterfaceMatch = configText.match(/^ip radius source-interface (\S+)/m);
-    if (radiusSourceInterfaceMatch) {
-        compliant.push(`Configuración ip radius source-interface ${radiusSourceInterfaceMatch[1]} encontrada (cumple con la buena práctica de especificar la interfaz de origen).`);
-    } else {
-        nonCompliant.push({
-            severity: 'Media',
-            context: 'Sin ip radius source-interface',
-            recommendation: 'Configure una interfaz de origen para los paquetes RADIUS.',
-            solution: 'ip radius source-interface <interface>',
-            description: 'La configuración ip radius source-interface no está presente.'
-        });
-    }
+    for (const intf of interfaceMatches) {
+        const nameMatch = intf.match(/interface (\S+)/);
+        const interfaceName = nameMatch ? nameMatch[1] : null;
+        const shutdownPresent = intf.includes('shutdown');
+        const statusLine = intf.match(/(administratively down|down)/i);
 
-    // Analyze radius server configurations
-    const servicePasswordEncryptionEnabled = configText.includes('service password-encryption');
-    const radiusServerBlocks = configText.split(/(?=^radius server)/m).filter(block => block.trim().startsWith('radius server'));
+        // Excluir interfaces VLAN
+        if (interfaceName && interfaceName.startsWith('Vlan')) {
+            continue;
+        }
 
-    if (radiusServerBlocks.length > 0) {
-        compliant.push(`Se encontraron ${radiusServerBlocks.length} configuraciones de servidor RADIUS.`);
-        radiusServerBlocks.forEach(block => {
-            const serverNameMatch = block.match(/^radius server (\S+)/m);
-            const serverName = serverNameMatch ? serverNameMatch[1] : 'Desconocido';
-            const keyMatch = block.match(/^\s*key (\S+)/m); // Look for 'key' line within the block, allowing for indentation
-
-            // Extract only the relevant lines for context
-            const relevantContextLines = block.split('\n').filter(line =>
-                line.trim().startsWith('radius server') || line.trim().startsWith('address') || line.trim().startsWith('key')
-            ).join('\n');
-
-
-            if (keyMatch) {
-                const key = keyMatch[1];
-                // Heuristic to check if the key is likely in clear text
-                const isLikelyClearText = /^[a-zA-Z0-9_]+$/.test(key);
-
-                if (isLikelyClearText && servicePasswordEncryptionEnabled) {
-                     nonCompliant.push({
-                        severity: 'Alta',
-                        context: relevantContextLines.trim(),
-                        recommendation: `La clave compartida para el servidor RADIUS "${serverName}" parece estar en texto claro a pesar de tener service password-encryption habilitado. Verifique la configuración y asegúrese de que la clave esté cifrada.`,
-                        solution: `Reconfigure la clave compartida para el servidor RADIUS "${serverName}" para asegurar que esté cifrada.`,
-                        description: `La clave compartida para el servidor RADIUS "${serverName}" parece estar en texto claro.`
-                    });
-                } else if (!servicePasswordEncryptionEnabled) {
-                     nonCompliant.push({
-                        severity: 'Alta',
-                        context: relevantContextLines.trim(),
-                        recommendation: 'Habilite service password-encryption para cifrar las claves compartidas de RADIUS y otras contraseñas en la configuración.',
-                        solution: `service password-encryption\n${relevantContextLines.trim()}`,
-                        description: `La clave compartida para el servidor RADIUS "${serverName}" no está cifrada porque service password-encryption no está habilitado.`
-                    });
-                }
-                 else {
-                    compliant.push(`La configuración del servidor RADIUS "${serverName}" tiene una clave compartida configurada y parece estar cifrada.`);
-                }
-            } else {
-                 nonCompliant.push({
-                    severity: 'Alta',
-                    context: relevantContextLines.trim(),
-                    recommendation: `Configure una clave compartida (key) para el servidor RADIUS "${serverName}".`,
-                    solution: `${relevantContextLines.trim()}\n key <shared-secret>`,
-                    description: `La configuración del servidor RADIUS "${serverName}" no tiene una clave compartida configurada.`
-                });
-            }
-        });
-    } else {
-        nonCompliant.push({
-            severity: 'Alta',
-            context: 'Sin configuración de servidor RADIUS',
-            recommendation: 'Configure al menos un servidor RADIUS.',
-            solution: 'radius server <name>\n address ipv4 <ip_address>\n key <shared-secret>',
-            description: 'No se encontraron configuraciones de servidor RADIUS.'
-        });
+        if (interfaceName && statusLine && !shutdownPresent) {
+            nonCompliant.push({
+                severity: 'Media',
+                context: intf.trim(),
+                recommendation: `Deshabilite las interfaces no utilizadas con el comando "shutdown" y asigne a VLAN segura.`,
+                solution: `${nameMatch[0]}\n shutdown\n switchport access vlan <vlan_segura>`,
+                description: `La interfaz ${nameMatch[1]} está en estado "${statusLine[1]}" y no está deshabilitada con "shutdown".`
+            });
+        } else if (nameMatch && shutdownPresent) {
+            compliant.push(`La interfaz ${nameMatch[1]} está deshabilitada correctamente.`);
+        }
     }
 
     return { compliant, nonCompliant };
