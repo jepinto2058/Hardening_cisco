@@ -51,3 +51,34 @@ No se requiere instalación ni servidor backend. Solo necesitas:
 - Un archivo de configuración Cisco (.txt o .cfg), típicamente obtenido mediante:
   ```bash
   show running-config
+
+## 📥 Cómo usar
+📂 Abre la página web local o desplegada.
+👆 Haz clic en "Arrastra y suelta un archivo .txt o .cfg aquí" o selecciona uno manualmente.
+🔍 Haz clic en "Analizar Configuración" .
+📋 Revisa los resultados detallados: cumplimientos y hallazgos.
+📈 Revisa el gráfico de severidad.
+📄 Haz clic en "Exportar Informe (PDF)" , "Exportar JSON" o "Exportar CSV" según sea necesario.
+🧩 Tecnologías usadas
+💻 HTML / CSS / JavaScript puro
+📈 Chart.js – para gráficos dinámicos
+📄 jsPDF + autoTable – para generación de PDFs
+🖼️ html2canvas – para capturar gráficos en PDF
+📁 FileReader API – para procesamiento local de archivos
+
+
+🤝 Contribuciones
+¡Bienvenidas son! Si quieres mejorar esta herramienta, puedes ayudar en:
+
+Añadir nuevas reglas de análisis (basadas en CIS, NIST, ISO 27001)
+Soportar nuevos tipos de dispositivos Cisco (ASA, FTD, Meraki, etc.)
+Mejorar el diseño del informe PDF
+Agregar soporte multi-idioma
+Integrar con APIs de vulnerabilidades (Cisco PSIRT, CVEs)
+
+👉 Para contribuir:
+Haz fork del repositorio
+Crea una rama nueva (git checkout -b feature/nueva-funcionalidad)
+Haz tus cambios
+Commit y push (git commit -m 'Agrega nueva característica')
+Crea un Pull Request
