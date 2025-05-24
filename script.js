@@ -522,8 +522,283 @@ function analyzeCiscoConfig(configText) {
     compliant = compliant.concat(unusedInterfacesAnalysis.compliant);
     nonCompliant = nonCompliant.concat(unusedInterfacesAnalysis.nonCompliant);
 
+    // Call the new function and merge results
+    const siemAnalysis = analyzeSIEMIntegration(configText);
+    compliant = compliant.concat(siemAnalysis.compliant);
+    nonCompliant = nonCompliant.concat(siemAnalysis.nonCompliant);
+
+    // Call the new function and merge results
+    const snmpAnalysis = analyzeSNMPConfig(configText);
+    compliant = compliant.concat(snmpAnalysis.compliant);
+    nonCompliant = nonCompliant.concat(snmpAnalysis.nonCompliant);
+
+    // Call the new function and merge results
+    const sshSourceLimitingAnalysis = analyzeSSHSourceLimiting(configText);
+    compliant = compliant.concat(sshSourceLimitingAnalysis.compliant);
+    nonCompliant = nonCompliant.concat(sshSourceLimitingAnalysis.nonCompliant);
 
     return { compliant, nonCompliant, riskScore, severityCounts, configText, osType, osVersion }; // Return osType and osVersion
+}
+
+function analyzeSSHSourceLimiting(configText) {
+    const compliant = [];
+    const nonCompliant = [];
+
+    // --- Análisis de Algoritmos del Servidor SSH ---
+    const sshAlgorithmLines = configText.split('\n').filter(line => line.trim().startsWith('ip ssh server algorithm'));
+
+    if (sshAlgorithmLines.length > 0) {
+        compliant.push(`Se encontraron ${sshAlgorithmLines.length} configuraciones de algoritmos de servidor SSH.`);
+
+        sshAlgorithmLines.forEach(line => {
+            const algorithmTypeMatch = line.match(/ip ssh server algorithm (mac|encryption|kex)/);
+            const algorithmType = algorithmTypeMatch ? algorithmTypeMatch[1] : 'desconocido';
+            const algorithms = line.substring(line.indexOf(algorithmType) + algorithmType.length).trim().split(' ');
+
+            let compliantAlgorithms = [];
+            let nonCompliantAlgorithms = [];
+
+            algorithms.forEach(algo => {
+                let isCompliant = false;
+                if (algorithmType === 'mac') {
+                    // Buenas prácticas para MAC: hmac-sha2-256, hmac-sha2-512
+                    if (algo.includes('sha2-256') || algo.includes('sha2-512')) {
+                        isCompliant = true;
+                    }
+                } else if (algorithmType === 'encryption') {
+                    // Buenas prácticas para Encryption: aes128-ctr, aes192-ctr, aes256-ctr
+                    if (algo.includes('aes') && algo.includes('ctr')) {
+                        isCompliant = true;
+                    }
+                } else if (algorithmType === 'kex') {
+                    // Buenas prácticas para KEX: diffie-hellman-group14-sha1 o superior
+                    if (algo.includes('diffie-hellman-group') && (parseInt(algo.match(/\d+/)?.[0]) >= 14 || algo.includes('ecdh'))) {
+                         isCompliant = true;
+                    }
+                }
+
+                if (isCompliant) {
+                    compliantAlgorithms.push(algo);
+                } else {
+                    nonCompliantAlgorithms.push(algo);
+                }
+            });
+
+            if (nonCompliantAlgorithms.length > 0) {
+                 nonCompliant.push({
+                    severity: 'Alta',
+                    context: line.trim(),
+                    recommendation: `Configure algoritmos de servidor SSH más seguros para ${algorithmType}.`,
+                    solution: `ip ssh server algorithm ${algorithmType} <algoritmos_seguros>`,
+                    description: `Se encontraron algoritmos de servidor SSH débiles o no recomendados para ${algorithmType}: ${nonCompliantAlgorithms.join(', ')}. La dependencia de algoritmos basados en SHA-1 (como hmac-sha1 o diffie-hellman-group14-sha1) introduce vulnerabilidades significativas debido a la debilidad de este hash.`,
+                    recommendation: `Se recomienda migrar a algoritmos ${algorithmType} más seguros (como hmac-sha2-256/512 para MAC, AES-CTR para Encryption, y grupos DH más grandes o ECDH con SHA-2 para KEX) para mitigar los riesgos y mejorar la seguridad general de las conexiones SSH.`,
+                    solution: `ip ssh server algorithm ${algorithmType} <algoritmos_seguros>`
+                });
+            } else {
+                compliant.push(`Los algoritmos de servidor SSH para ${algorithmType} cumplen con las buenas prácticas.`);
+            }
+        });
+
+    } else {
+        nonCompliant.push({
+            severity: 'Media',
+            context: 'Sin configuración de ip ssh server algorithm',
+            recommendation: 'Configure explícitamente los algoritmos de servidor SSH para usar opciones seguras.',
+            solution: 'ip ssh server algorithm mac hmac-sha2-256 hmac-sha2-512\nip ssh server algorithm encryption aes128-ctr aes192-ctr aes256-ctr\nip ssh server algorithm kex diffie-hellman-group14-sha1',
+            description: 'No se encontraron configuraciones explícitas de algoritmos de servidor SSH. Se pueden estar utilizando algoritmos débiles por defecto.'
+        });
+    }
+
+
+    // --- Análisis de Limitación de Fuentes SSH (access-class) y ACLs con permit any any ---
+    const vtyLines = configText.split('\n').filter(line => line.trim().startsWith('line vty'));
+
+    let accessClassFound = false;
+
+    for (const vtyLine of vtyLines) {
+        const vtyRangeMatch = vtyLine.match(/line vty (\d+) (\d+)/);
+        if (vtyRangeMatch) {
+            const startVty = parseInt(vtyRangeMatch[1]);
+            const endVty = parseInt(vtyRangeMatch[2]);
+
+            const vtyBlockRegex = new RegExp(`line vty ${startVty} ${endVty}([\\s\\S]*?)(?:\\nline vty|\\n!|\\nend|$)`);
+            const vtyBlockMatch = configText.match(vtyBlockRegex);
+
+            if (vtyBlockMatch) {
+                const vtyBlock = vtyBlockMatch[1];
+                // Buscar si se aplica una lista de acceso (access-class)
+                const accessClassMatch = vtyBlock.match(/^\s*access-class (\d+) (in|out)/m);
+
+                if (accessClassMatch) {
+                    accessClassFound = true;
+                    const aclNumber = accessClassMatch[1];
+                    const direction = accessClassMatch[2];
+
+                    // Buscar la definición de la lista de acceso
+                    const aclDefinitionBlockMatch = configText.match(new RegExp(`(^ip access-list (?:standard|extended) ${aclNumber}[\\s\\S]*?)(?:\\nip access-list|\\n!|\\nend|$)`, 'm'));
+
+                    if (aclDefinitionBlockMatch) {
+                        const aclBlock = aclDefinitionBlockMatch[1];
+                        compliant.push(`Se encontró una lista de acceso (${aclNumber}) aplicada a las líneas VTY ${startVty}-${endVty} en dirección "${direction}".`);
+
+                        // Buscar reglas 'permit ip any any' dentro de la ACL
+                        const permitAnyAnyMatches = aclBlock.match(/^.*permit ip any any.*$/m) || [];
+
+                        if (permitAnyAnyMatches.length > 0) {
+                             nonCompliant.push({
+                                severity: 'Alta',
+                                context: aclBlock.trim(),
+                                recommendation: `Elimine o modifique las reglas "permit ip any any" en la lista de acceso ${aclNumber} aplicada a las líneas VTY. Limite el acceso SSH a fuentes confiables.`,
+                                solution: `No ${permitAnyAnyMatches.join('\nno ')}`,
+                                description: `La lista de acceso ${aclNumber} aplicada a las líneas VTY contiene reglas "permit ip any any", permitiendo acceso SSH desde cualquier origen.`
+                            });
+                        } else {
+                            compliant.push(`La lista de acceso ${aclNumber} aplicada a las líneas VTY no contiene reglas "permit ip any any".`);
+                        }
+
+                    } else {
+                         nonCompliant.push({
+                            severity: 'Media',
+                            context: vtyLine.trim() + vtyBlock,
+                            recommendation: `La lista de acceso ${aclNumber} aplicada a las líneas VTY ${startVty}-${endVty} no está definida en la configuración.`,
+                            solution: `Defina la lista de acceso ${aclNumber} con las reglas de filtrado de IP de origen deseadas.`,
+                            description: `La lista de acceso ${aclNumber} aplicada a las líneas VTY ${startVty}-${endVty} no está definida.`
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if (!accessClassFound) {
+        nonCompliant.push({
+            severity: 'Alta',
+            context: 'Sin access-class en líneas VTY',
+            recommendation: 'Aplique una lista de acceso (ACL) a las líneas VTY para limitar las fuentes permitidas para acceder vía SSH.',
+            solution: 'line vty 0 15\n access-class <numero_acl> in',
+            description: 'No se encontraron listas de acceso (ACL) aplicadas a las líneas VTY para limitar el acceso SSH por IP de origen.'
+        });
+    }
+
+    return { compliant, nonCompliant };
+}
+
+function analyzeSNMPConfig(configText) {
+    const compliant = [];
+    const nonCompliant = [];
+
+    // Verificar configuraciones SNMPv1/v2
+    const snmpV1V2Matches = configText.match(/^snmp-server community (\S+)(?: ro| rw)?(?: view \S+)?(?: acl \d+)?/m) || [];
+    if (snmpV1V2Matches.length > 0) {
+        snmpV1V2Matches.forEach(match => {
+            nonCompliant.push({
+                severity: 'Alta',
+                context: match.trim(),
+                recommendation: 'Deshabilite las configuraciones de SNMPv1/v2 y utilice únicamente SNMPv3 con autenticación y cifrado fuertes.',
+                solution: `no ${match.trim()}`,
+                description: `Se encontró una configuración de comunidad SNMPv1/v2: "${match.trim()}".`
+            });
+        });
+    } else {
+        compliant.push('No se encontraron configuraciones de comunidad SNMPv1/v2.');
+    }
+
+    // Verificar configuraciones SNMPv3
+    const snmpV3Users = configText.match(/^snmp-server user (\S+) (\S+) v3 (?:auth (\S+)(?: priv (\S+))?|priv (\S+)(?: auth (\S+))?)/m) || [];
+    const snmpV3Groups = configText.match(/^snmp-server group (\S+) v3 (?:auth|priv)/m) || [];
+
+    if (snmpV3Users.length === 0 && snmpV3Groups.length === 0 && !configText.includes('snmp-server enable traps')) {
+         nonCompliant.push({
+            severity: 'Alta',
+            context: 'Sin configuraciones snmp-server',
+            recommendation: 'Configure SNMPv3 con usuarios, autenticación y cifrado fuertes.',
+            solution: 'snmp-server group <groupname> v3 priv\nsnmp-server user <username> <groupname> v3 auth sha <auth-password> priv aes 128 <priv-password>',
+            description: 'No se encontraron configuraciones de SNMP (ni v1/v2 ni v3).'
+        });
+    } else {
+        if (snmpV3Users.length > 0) {
+            compliant.push(`Se encontraron ${snmpV3Users.length} usuarios SNMPv3 configurados.`);
+            snmpV3Users.forEach(userMatch => {
+                const userLine = userMatch[0];
+                const username = userMatch[1];
+                const groupname = userMatch[2];
+                const authMethod = userMatch[3] || userMatch[7]; // auth method can be in different positions
+                const privMethod = userMatch[4] || userMatch[5]; // priv method can be in different positions
+
+                let userCompliant = true;
+
+                // Check Authentication Method
+                if (!authMethod || (authMethod.toLowerCase() !== 'sha' && authMethod.toLowerCase() !== 'sha256')) {
+                    nonCompliant.push({
+                        severity: 'Alta',
+                        context: userLine.trim(),
+                        recommendation: `Configure el usuario SNMPv3 "${username}" para usar autenticación SHA o SHA256.`,
+                        solution: `snmp-server user ${username} ${groupname} v3 auth sha <auth-password> priv ${privMethod || 'aes 128'} <priv-password>`,
+                        description: `El usuario SNMPv3 "${username}" no utiliza autenticación SHA o SHA256 (método actual: ${authMethod || 'ninguno'}).`
+                    });
+                    userCompliant = false;
+                } else {
+                    compliant.push(`El usuario SNMPv3 "${username}" utiliza autenticación ${authMethod}.`);
+                }
+
+                // Check Privacy Method
+                if (!privMethod || (privMethod.toLowerCase() !== 'aes' && privMethod.toLowerCase() !== 'aes128' && privMethod.toLowerCase() !== 'aes192' && privMethod.toLowerCase() !== 'aes256')) {
+                     nonCompliant.push({
+                        severity: 'Alta',
+                        context: userLine.trim(),
+                        recommendation: `Configure el usuario SNMPv3 "${username}" para usar cifrado AES-128 o superior.`,
+                        solution: `snmp-server user ${username} ${groupname} v3 auth ${authMethod || 'sha'} <auth-password> priv aes 128 <priv-password>`,
+                        description: `El usuario SNMPv3 "${username}" no utiliza cifrado AES-128 o superior (método actual: ${privMethod || 'ninguno'}).`
+                    });
+                    userCompliant = false;
+                } else {
+                    compliant.push(`El usuario SNMPv3 "${username}" utiliza cifrado ${privMethod}.`);
+                }
+
+                // Check Group Assignment with 'priv'
+                const groupMatch = snmpV3Groups.find(group => group[1] === groupname);
+                if (!groupMatch || !groupMatch[0].includes('v3 priv')) {
+                     nonCompliant.push({
+                        severity: 'Alta',
+                        context: userLine.trim() + (groupMatch ? '\n' + groupMatch[0].trim() : ''),
+                        recommendation: `Asegúrese de que el grupo SNMPv3 "${groupname}" asignado al usuario "${username}" esté configurado con "v3 priv".`,
+                        solution: `snmp-server group ${groupname} v3 priv`,
+                        description: `El grupo SNMPv3 "${groupname}" asignado al usuario "${username}" no está configurado con "v3 priv".`
+                    });
+                    userCompliant = false;
+                } else {
+                    compliant.push(`El grupo SNMPv3 "${groupname}" asignado al usuario "${username}" está configurado con "v3 priv".`);
+                }
+
+                if (userCompliant) {
+                    compliant.push(`El usuario SNMPv3 "${username}" está configurado de forma segura.`);
+                }
+            });
+        } else {
+             nonCompliant.push({
+                severity: 'Alta',
+                context: 'Sin usuarios snmp-server user v3',
+                recommendation: 'Defina usuarios para SNMPv3.',
+                solution: 'snmp-server user <username> <groupname> v3 auth sha <auth-password> priv aes 128 <priv-password>',
+                description: 'No se encontraron usuarios SNMPv3 definidos.'
+            });
+        }
+
+        if (snmpV3Groups.length === 0) {
+             nonCompliant.push({
+                severity: 'Alta',
+                context: 'Sin snmp-server group v3',
+                recommendation: 'Defina grupos para SNMPv3.',
+                solution: 'snmp-server group <groupname> v3 priv',
+                description: 'No se encontraron grupos SNMPv3 definidos.'
+            });
+        } else {
+            compliant.push(`Se encontraron ${snmpV3Groups.length} grupos SNMPv3 configurados.`);
+        }
+    }
+
+
+    return { compliant, nonCompliant };
 }
 
 function analyzeVlanSecurity(configText) {
@@ -1064,6 +1339,95 @@ function analyzeUnusedInterfaces(configText) {
             compliant.push(`La interfaz ${nameMatch[1]} está deshabilitada correctamente.`);
         }
     }
+
+    return { compliant, nonCompliant };
+}
+
+function analyzeSIEMIntegration(configText) {
+    const compliant = [];
+    const nonCompliant = [];
+
+    // Check for logging host
+    const loggingHostMatches = configText.match(/^logging host (\S+)/m) || [];
+    if (loggingHostMatches.length > 0) {
+        compliant.push(`Se encontraron ${loggingHostMatches.length} configuraciones de 'logging host' apuntando a: ${loggingHostMatches.map(match => match.split(' ')[2]).join(', ')}`);
+    } else {
+        nonCompliant.push({
+            severity: 'Alta',
+            context: 'Sin configuración de logging host',
+            recommendation: 'Configure al menos un servidor de logging (SIEM) para enviar los registros de seguridad.',
+            solution: 'logging host <IP_del_SIEM>',
+            description: 'No se encontraron configuraciones de "logging host". Los registros de seguridad no se están enviando a un SIEM.'
+        });
+    }
+
+    // Check for logging trap level
+    const loggingTrapMatch = configText.match(/^logging trap (\S+)/m);
+    if (loggingTrapMatch) {
+        const trapLevel = loggingTrapMatch[1];
+        const recommendedLevels = ['warnings', 'notifications', 'informational', 'debugging']; // Levels that include security events
+
+        if (recommendedLevels.includes(trapLevel.toLowerCase()) || parseInt(trapLevel) >= 4) { // Levels 4 (warnings) and above are generally good
+             compliant.push(`El nivel de logging trap está configurado a "${trapLevel}" (incluye eventos de seguridad).`);
+        } else {
+             nonCompliant.push({
+                severity: 'Media',
+                context: loggingTrapMatch[0],
+                recommendation: 'Configure el nivel de logging trap a "warnings" (4) o superior para incluir eventos de seguridad relevantes.',
+                solution: 'logging trap warnings',
+                description: `El nivel de logging trap está configurado a "${trapLevel}", lo cual puede no incluir todos los eventos de seguridad relevantes.`
+            });
+        }
+    } else {
+        nonCompliant.push({
+            severity: 'Media',
+            context: 'Sin configuración de logging trap',
+            recommendation: 'Configure el nivel de logging trap para especificar qué mensajes se envían al servidor de logging.',
+            solution: 'logging trap warnings',
+            description: 'No se encontró la configuración "logging trap". No se especifica qué mensajes se envían al SIEM.'
+        });
+    }
+
+    // Check for logging origin-id
+    if (configText.includes('logging origin-id hostname') || configText.includes('logging origin-id ip')) {
+        compliant.push('La configuración de logging origin-id está presente (usando hostname o IP).');
+    } else {
+        nonCompliant.push({
+            severity: 'Baja',
+            context: 'Sin configuración de logging origin-id',
+            recommendation: 'Configure "logging origin-id hostname" o "logging origin-id ip" para identificar el dispositivo de origen en los logs.',
+            solution: 'logging origin-id hostname',
+            description: 'La configuración "logging origin-id" no está presente. Puede dificultar la identificación del dispositivo de origen en el SIEM.'
+        });
+    }
+
+    // Check for logging source-interface
+    const loggingSourceInterfaceMatch = configText.match(/^logging source-interface (\S+)/m);
+    if (loggingSourceInterfaceMatch) {
+        compliant.push(`Configuración logging source-interface ${loggingSourceInterfaceMatch[1]} encontrada.`);
+    } else {
+        nonCompliant.push({
+            severity: 'Baja',
+            context: 'Sin configuración de logging source-interface',
+            recommendation: 'Configure una interfaz de origen para los mensajes de logging.',
+            solution: 'logging source-interface <interface>',
+            description: 'La configuración "logging source-interface" no está presente. Puede dificultar la correlación de logs en el SIEM.'
+        });
+    }
+
+    // Check for service timestamps log datetime
+    if (configText.includes('service timestamps log datetime')) {
+        compliant.push('La configuración "service timestamps log datetime" está presente (recomendado para precisión de tiempo).');
+    } else {
+        nonCompliant.push({
+            severity: 'Baja',
+            context: 'Sin configuración de service timestamps log datetime',
+            recommendation: 'Configure "service timestamps log datetime" para incluir información de fecha y hora precisa en los logs.',
+            solution: 'service timestamps log datetime',
+            description: 'La configuración "service timestamps log datetime" no está presente. La falta de timestamps precisos dificulta el análisis forense.'
+        });
+    }
+
 
     return { compliant, nonCompliant };
 }
