@@ -472,30 +472,6 @@ function analyzeCiscoConfig(configText) {
         // Añadir más análisis específicos para NX-OS según sea necesario
     }
 
-
-    let riskScore = 0;
-    nonCompliant.forEach(item => {
-        if (item.severity === 'Alta') {
-            riskScore += 10;
-        } else if (item.severity === 'Media') {
-            riskScore += 5;
-        } else if (item.severity === 'Baja') {
-            riskScore += 1;
-        }
-    });
-
-    const severityCounts = {
-        Alta: 0,
-        Media: 0,
-        Baja: 0
-    };
-
-    nonCompliant.forEach(item => {
-        if (severityCounts.hasOwnProperty(item.severity)) {
-            severityCounts[item.severity]++;
-        }
-    });
-
     // Extract OS Version
     let osVersion = 'No detectada';
     const iosMatch = configText.match(/Cisco IOS Software.*?, Version ([\d\.\(E\)\w]+)/);
@@ -537,7 +513,22 @@ function analyzeCiscoConfig(configText) {
     compliant = compliant.concat(sshSourceLimitingAnalysis.compliant);
     nonCompliant = nonCompliant.concat(sshSourceLimitingAnalysis.nonCompliant);
 
-    return { compliant, nonCompliant, riskScore, severityCounts, configText, osType, osVersion }; // Return osType and osVersion
+    // Calculate severityCounts AFTER all analysis functions have run
+    const severityCounts = {
+        Alta: 0,
+        Media: 0,
+        Baja: 0
+    };
+
+    nonCompliant.forEach(item => {
+        if (severityCounts.hasOwnProperty(item.severity)) {
+            severityCounts[item.severity]++;
+        }
+    });
+
+    // riskScore calculation removed as requested
+
+    return { compliant, nonCompliant, severityCounts, configText, osType, osVersion }; // riskScore removed from return
 }
 
 function analyzeSSHSourceLimiting(configText) {
@@ -867,61 +858,123 @@ function analyzeVlanSecurity(configText) {
 }
 
 function displayResults(results) {
-    const compliantList = document.getElementById('compliant').querySelector('ul');
-    const nonCompliantList = document.getElementById('nonCompliant').querySelector('ul');
+    // Selectores actualizados para la nueva estructura HTML
+    const compliantList = document.getElementById('compliant').querySelector('.result-list');
+    const nonCompliantList = document.getElementById('nonCompliant').querySelector('.result-list');
+    const analysisDateSpan = document.getElementById('analysis-date');
+    const osVersionSpan = document.getElementById('ios-version');
+    const compliantCountSpan = document.getElementById('compliant-count');
+    const nonCompliantCountSpan = document.getElementById('non-compliant-count');
+    const riskScoreSpan = document.getElementById('risk-score');
+    const osTypeSpan = document.getElementById('os-type');
+    const resultsSection = document.getElementById('results');
+    const loadingIndicator = document.getElementById('loading-indicator');
+
+    // Get dashboard card elements
+    const criticalCardNumber = document.querySelector('.card.critical .number');
+    const criticalCardLabel = document.querySelector('.card.critical .label');
+    const highCardNumber = document.querySelector('.card.high .number');
+    const highCardLabel = document.querySelector('.card.high .label');
+    const mediumCardNumber = document.querySelector('.card.medium .number');
+    const mediumCardLabel = document.querySelector('.card.medium .label');
+    const lowCardNumber = document.querySelector('.card.low .number');
+    const lowCardLabel = document.querySelector('.card.low .label');
+
+
     const analysisDate = new Date().toLocaleDateString();
-    const osVersion = results.osVersion; // Use extracted OS version
+    const osVersion = results.osVersion;
     const compliantCount = results.compliant.length;
     const nonCompliantCount = results.nonCompliant.length;
-    const riskScore = results.riskScore;
-    const osType = results.osType; // Use extracted OS type
+    const osType = results.osType;
 
-    document.getElementById('analysis-date').textContent = analysisDate;
-    document.getElementById('ios-version').textContent = osVersion; // Update ID to reflect OS version
-    document.getElementById('compliant-count').textContent = compliantCount;
-    document.getElementById('non-compliant-count').textContent = nonCompliantCount;
-    document.getElementById('risk-score').textContent = riskScore;
-    document.getElementById('os-type').textContent = osType; // Display OS Type
+    // Actualizar elementos de resumen
+    analysisDateSpan.textContent = analysisDate;
+    osVersionSpan.textContent = osVersion;
+    compliantCountSpan.textContent = compliantCount;
+    nonCompliantCountSpan.textContent = nonCompliantCount;
+    // riskScoreSpan update removed as requested
+    osTypeSpan.textContent = osType;
+
+    // Update dashboard card numbers and labels
+    criticalCardNumber.textContent = results.severityCounts.Alta;
+    criticalCardLabel.textContent = 'alta';
+    highCardNumber.textContent = results.severityCounts.Media;
+    highCardLabel.textContent = 'media';
+    mediumCardNumber.textContent = results.severityCounts.Baja;
+    mediumCardLabel.textContent = 'baja';
+    lowCardNumber.textContent = results.compliant.length;
+    lowCardLabel.textContent = 'cumplimiento';
 
 
+    // Limpiar listas existentes
     compliantList.innerHTML = '';
     nonCompliantList.innerHTML = '';
 
+    // Mostrar cumplimientos
     results.compliant.forEach(item => {
         const li = document.createElement('li');
-        li.textContent = item;
+        li.classList.add('result-item', 'compliant'); // Añadir clases para estilo
+        li.innerHTML = `
+            <p>${item}</p>
+        `;
         compliantList.appendChild(li);
     });
 
-    results.nonCompliant.forEach(item => {
-        const li = document.createElement('li');
-        li.classList.add(`severity-${item.severity.toLowerCase()}`);
-        li.innerHTML = `
-            <strong>${item.description}</strong>
-            <p><strong>Gravedad:</strong> ${item.severity}</p>
-            <p><strong>Contexto:</strong> <code>${item.context}</code></p>
-            <p><strong>Recomendación:</strong> ${item.recommendation}</p>
-            <p><strong>Mitigar:</strong> <code>${item.solution}</code></p>
-        `;
-        nonCompliantList.appendChild(li);
+    // Mostrar hallazgos no conformes por severidad
+    const severities = ['Alta', 'Media', 'Baja', 'Informativo']; // Incluir Informativo si se muestra
+
+    severities.forEach(severity => {
+        const findingsBySeverity = results.nonCompliant.filter(item => item.severity === severity);
+
+        if (findingsBySeverity.length > 0) {
+            // Crear un encabezado para la severidad
+            const severityHeader = document.createElement('h4');
+            severityHeader.textContent = `${severity} (${findingsBySeverity.length})`;
+            nonCompliantList.appendChild(severityHeader);
+
+            // Crear una lista para esta severidad
+            const severityList = document.createElement('ul');
+            severityList.classList.add('result-list', `severity-list-${severity.toLowerCase()}`);
+            nonCompliantList.appendChild(severityList);
+
+            // Agregar los hallazgos a la lista de esta severidad
+            findingsBySeverity.forEach(item => {
+                const li = document.createElement('li');
+                li.classList.add('result-item', 'non-compliant', `severity-${item.severity.toLowerCase()}`); // Añadir clases para estilo y severidad
+                li.innerHTML = `
+                    <div class="severity">${item.severity}</div>
+                    <div>
+                        <strong>${item.description}</strong>
+                        <p><strong>Contexto:</strong> <code>${item.context}</code></p>
+                        <p><strong>Recomendación:</strong> ${item.recommendation}</p>
+                        <p><strong>Mitigar:</strong> <code>${item.solution}</code></p>
+                    </div>
+                `;
+                severityList.appendChild(li);
+            });
+        }
     });
 
-    // Enable the export button
+    // Habilitar botones de exportación
     document.getElementById('export-report-btn').disabled = false;
     document.getElementById('export-json-btn').disabled = false;
     document.getElementById('export-csv-btn').disabled = false;
 
+    // Ocultar indicador de carga y mostrar resultados
+    loadingIndicator.classList.remove('visible');
+    resultsSection.style.display = 'block'; // Asegurar que la sección de resultados sea visible
 
-    // Render severity chart
+
+    // Renderizar gráfico de severidad
     const severityCounts = results.severityCounts;
     const ctx = document.getElementById('severityChart').getContext('2d');
 
-    // Destroy existing chart if it exists
+    // Destruir gráfico existente si existe
     if (window.severityChartInstance) {
         window.severityChartInstance.destroy();
     }
 
-    window.severityChartInstance = new Chart(ctx, { // Store chart instance
+    window.severityChartInstance = new Chart(ctx, { // Almacenar instancia del gráfico
         type: 'bar',
         data: {
             labels: ['Alta', 'Media', 'Baja'],
@@ -929,14 +982,14 @@ function displayResults(results) {
                 label: 'Cantidad de Hallazgos por Gravedad',
                 data: [severityCounts.Alta, severityCounts.Media, severityCounts.Baja],
                 backgroundColor: [
-                    'rgba(255, 99, 132, 0.5)', // Red for Alta
-                    'rgba(255, 159, 64, 0.5)', // Orange for Media
-                    'rgba(75, 192, 192, 0.5)'  // Green for Baja
+                    'rgba(255, 0, 0, 0.6)',    /* Rojo para Alta */
+                    'rgba(255, 255, 0, 0.6)',  /* Amarillo para Media */
+                    'rgba(0, 255, 0, 0.6)'     /* Verde para Baja */
                 ],
                 borderColor: [
-                    'rgba(255, 99, 132, 1)',
-                    'rgba(255, 159, 64, 1)',
-                    'rgba(75, 192, 192, 1)'
+                    'rgba(255, 0, 0, 1)',
+                    'rgba(255, 255, 0, 1)',
+                    'rgba(0, 255, 0, 1)'
                 ],
                 borderWidth: 1
             }]
@@ -945,15 +998,29 @@ function displayResults(results) {
             scales: {
                 y: {
                     beginAtZero: true,
+                    ticks: {
+                        color: '#e0e0e0' // Color de texto para el eje Y
+                    },
+                    grid: {
+                        color: 'rgba(224, 224, 224, 0.1)' // Color de las líneas de la cuadrícula
+                    },
                     title: {
                         display: true,
-                        text: 'Cantidad de Hallazgos'
+                        text: 'Cantidad de Hallazgos',
+                        color: '#e0e0e0' // Color de texto para el título del eje Y
                     }
                 },
                 x: {
+                    ticks: {
+                        color: '#e0e0e0' // Color de texto para el eje X
+                    },
+                     grid: {
+                        color: 'rgba(224, 224, 224, 0.1)' // Color de las líneas de la cuadrícula
+                    },
                      title: {
                         display: true,
-                        text: 'Gravedad'
+                        text: 'Gravedad',
+                        color: '#e0e0e0' // Color de texto para el título del eje X
                     }
                 }
             },
@@ -963,9 +1030,12 @@ function displayResults(results) {
                 },
                 title: {
                     display: true,
-                    text: 'Resumen de Hallazgos por Gravedad'
+                    text: 'Resumen de Hallazgos por Gravedad',
+                    color: '#e0e0e0' // Color de texto para el título del gráfico
                 }
-            }
+            },
+            responsive: true,
+            maintainAspectRatio: false // Permitir que el gráfico se redimensione libremente
         }
     });
 }

@@ -1,53 +1,99 @@
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
-    <title>Cisco Hardening and Vulnerability Analysis</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cisco Analysis - Cybersecurity</title>
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- jsPDF -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js "></script>
-
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <!-- autoTable (opcional, para tablas en PDF) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/5.0.2/jspdf.plugin.autotable.min.js"></script>
-
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 </head>
 <body>
     <div class="container">
-        <h1>CybersecurityJP</h1>
-        <p style="text-align: center;">Analizador de Vulnerabilidades en Configuraciones Cisco</p>
+        <header class="header">
+            <h1>Cisco Analysis</h1>
+            <p>Herramienta de Análisis de Configuraciones Cisco</p>
+        </header>
 
-        <div id="drag-area">
-            <input type="file" id="configFile" accept=".txt, .cfg" style="display: none;">
-            <label for="configFile">Arrastra y suelta un archivo .txt o .cfg aquí, o haz clic para seleccionar</label>
-        </div>
-        <p id="file-name"></p>
-        <button onclick="analyzeConfig()">Analizar Configuración</button>
+        <section id="upload-section" class="card">
+            <h2>Cargar Archivo de Configuración</h2>
+            <div id="drag-area" class="drag-area">
+                <input type="file" id="configFile" accept=".txt, .cfg" class="file-input">
+                <label for="configFile" class="drag-label">Arrastra y suelta un archivo .txt o .cfg aquí, o haz clic para seleccionar</label>
+            </div>
+            <p id="file-name" class="file-name"></p>
+            <button id="analyze-btn" onclick="analyzeConfig()">Analizar Configuración</button>
+        </section>
 
-        <div id="results">
+        <section id="loading-indicator" class="loading-indicator">
+            <p>Analizando...</p>
+        </section>
+
+        <section id="results" class="results-section">
             <h2>Resultados del Análisis</h2>
-            <p>Fecha del Análisis: <span id="analysis-date"></span></p>
-            <p>Sistema Operativo Detectado: <span id="os-type"></span></p>
-            <p>Versión del Sistema Operativo: <span id="ios-version"></span></p>
-            <p>Cumplimientos: <span id="compliant-count"></span></p>
-            <p>Hallazgos totales: <span id="non-compliant-count"></span></p>
-            <p>Perfil de Riesgo: <span id="risk-score"></span></p>
-            <div id="compliant">
-                <h3>Cumplimientos</h3>
-                <ul></ul>
+            <div class="summary-grid">
+                <div class="summary-item card">
+                    <h3>Fecha del Análisis</h3>
+                    <p><span id="analysis-date"></span></p>
+                </div>
+                <div class="summary-item card">
+                    <h3>Sistema Operativo</h3>
+                    <p><span id="os-type"></span></p>
+                </div>
+                <div class="summary-item card">
+                    <h3>Versión de IOS</h3>
+                    <p><span id="ios-version"></span></p>
+                </div>
+                <div class="summary-item card">
+                    <h3>Cumplimientos</h3>
+                    <p><span id="compliant-count"></span></p>
+                </div>
+                <div class="summary-item card">
+                    <h3>Hallazgos Totales</h3>
+                    <p><span id="non-compliant-count"></span></p>
+                </div>
             </div>
-            <div id="nonCompliant">
+
+            <div class="dashboard-container">
+                <div class="card critical">
+                    <div class="number">0</div>
+                    <div class="label">alta</div>
+                </div>
+                <div class="card high">
+                    <div class="number">0</div>
+                    <div class="label">media</div>
+                </div>
+                <div class="card medium">
+                    <div class="number">0</div>
+                    <div class="label">baja</div>
+                </div>
+                <div class="card low">
+                    <div class="number">0</div>
+                    <div class="label">cumplimiento</div>
+                </div>
+            </div>
+
+            <div id="nonCompliant" class="result-section card">
                 <h3>Hallazgos</h3>
-                <ul></ul>
+                <ul class="result-list"></ul>
             </div>
-            <div id="chart-container">
-                <canvas id="severityChart"></canvas>
+
+            <div id="compliant" class="result-section card">
+                <h3>Cumplimientos</h3>
+                <ul class="result-list"></ul>
             </div>
-        </div>
+
+            <div class="export-buttons">
+                <button id="export-report-btn" disabled>Exportar Informe (PDF)</button>
+                <button id="export-json-btn" disabled>Exportar JSON</button>
+                <button id="export-csv-btn" disabled>Exportar CSV</button>
+            </div>
+        </section>
     </div>
     <script src="script.js"></script>
-  <button id="export-report-btn" disabled>Exportar Informe (PDF)</button>
-  <button id="export-json-btn" disabled>Exportar JSON</button>
-  <button id="export-csv-btn" disabled>Exportar CSV</button>
 </body>
 </html>
